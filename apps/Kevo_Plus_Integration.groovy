@@ -31,15 +31,27 @@ def prefAccountAccess() {
 }
 
 def prefDevices() {
-    return dynamicPage(name: "prefDevices", title: "Lock Information", install: true, uninstall: true) {
-        section("Lock Information") {
-            input(name: "lockCount", type: "number", title: "How many locks do you have?", required: true, submitOnChange: true)
-            for (def i = 0; i < lockCount; i++) {
-                input(name: "lockName${i}", type: "text", title: "Lock ${i+1} Name", required: true)
-                input(name: "lockId${i}", type: "text", title: "Lock ${i+1} ID", required: true)
-            }
-        }
-    }
+	getTokenInfo()
+	if (login())
+	{
+		return dynamicPage(name: "prefDevices", title: "Lock Information", install: true, uninstall: true) {
+			section("Lock Information") {
+				input(name: "lockCount", type: "number", title: "How many locks do you have?", required: true, submitOnChange: true)
+				for (def i = 0; i < lockCount; i++) {
+					input(name: "lockName${i}", type: "text", title: "Lock ${i+1} Name", required: true)
+					input(name: "lockId${i}", type: "text", title: "Lock ${i+1} ID", required: true)
+				}
+			}
+		}
+	}
+	else
+	{
+		return dynamicPage(name: "prefDevices", title: "Login Error", install: false, uninstall: false) {
+			section("Error") {
+				paragraph "The specified username/password are invalid"
+			}
+		}
+	}
 }
 
 def installed() {
@@ -83,7 +95,7 @@ def extractTokenAndCookie(response) {
         state.token = (response.data.text =~ /meta content="(.*?)" name="csrf-token"/)[0][1]
         state.tokenRefresh = now()
     } catch (Exception e) {
-		// 
+		logDebug "Token reading threw ${e}" 
     }
 }
 
@@ -112,6 +124,7 @@ def getLockInfo()
 	def resp = sendCommand("/user/locks", "GET", "text/html", "text/html", null, null, true)
 	if (resp.status == 302 || resp.status == 200)
 		extractTokenAndCookie(resp)
+	return resp.data.text
 }
 
 def getLockStatus(lockId) {
