@@ -14,6 +14,8 @@ definition(
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
     iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png")
 
+import groovy.transform.Field
+@Field static List commandQueue = []
 
 preferences {
 	page(name: "prefAccountAccess", title: "Kevo")
@@ -21,6 +23,7 @@ preferences {
 }
 
 def prefAccountAccess() {
+	getTokenInfo()
 	return dynamicPage(name: "prefApiAccess", title: "Connect to Kevo Plus", nextPage: "prefDevices", uninstall:false, install: false) {
 		section("Kevo Login Information"){
 			input("kevoUsername", "text", title: "Kevo Username", description: "Enter your Kevo username", required: true)
@@ -31,7 +34,6 @@ def prefAccountAccess() {
 }
 
 def prefDevices() {
-	getTokenInfo()
 	if (login())
 	{
 		return dynamicPage(name: "prefDevices", title: "Lock Information", install: true, uninstall: true) {
@@ -44,19 +46,10 @@ def prefDevices() {
 			}
 		}
 	}
-	else
-	{
-		return dynamicPage(name: "prefDevices", title: "Login Error", install: false, uninstall: false) {
-			section("Error") {
-				paragraph "The specified username/password are invalid"
-			}
-		}
-	}
 }
 
 def installed() {
 	logDebug "Installed with settings: ${settings}"
-
 	initialize()
 }
 
@@ -77,23 +70,102 @@ def uninstalled() {
 
 def initialize() {
 	logDebug "initializing"
+	
+	commandQueue = []
+	state.lastLockQuery = 0
 	cleanupChildDevices()
 	createChildDevices()
 	cleanupSettings()
-	schedule("0/30 * * * * ? *", updateDevices)
+	runIn(1, runAllActions, [overwrite: true])
+}
+
+def runAllActions()
+{
+	try
+	{
+		while (commandQueue.size() > 0)
+		{
+			def action = commandQueue[0]
+			commandQueue.removeAt(0)
+			logDebug "Executing ${action.command} on ${action.id} ${commandQueue.size()}"
+			if (action.command == "lock")
+				executeLock(action.id)
+			else if (action.command == "unlock")
+				executeUnlock(action.id)
+			else if (action.command == "refresh")
+				executeRefresh()
+		}
+		if (now() - state.lastLockQuery >= 30000)
+		{
+			logDebug "Updating devices"
+			state.lastLockQuery = now()
+			updateDevices()
+		}
+	}
+	catch (e)
+	{
+		log.error e
+	}
+	runIn(1, runAllActions, [overwrite: true])
+}
+
+def executeLock(id) {
+	def device = getChildDevice("kevo:" + id)
+	def currentValue = device.currentValue("lock")
+	logDebug "current lock state is ${currentValue}"
+    sendCommand("/user/remote_locks/command/remote_lock.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
+	pauseExecution(2000)
+	if (currentValue != "locked")
+	{
+		for (def i = 0; i < 3; i++)
+		{
+			logDebug "Checking lock status..."
+			pauseExecution(5000)
+			def newLockStatus = updateLockStatus(id)
+			if (newLockStatus != "unknown" && newLockStatus != currentValue)
+				break
+		}
+	}
+}
+
+def executeUnlock(id) {
+	def device = getChildDevice("kevo:" + id)
+	def currentValue = device.currentValue("lock")
+	logDebug "current lock state is ${currentValue}"
+    sendCommand("/user/remote_locks/command/remote_unlock.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
+	pauseExecution(2000)
+	if (currentValue != "unlocked")
+	{
+		for (def i = 0; i < 3; i++)
+		{
+		logDebug "Checking lock status..."
+			pauseExecution(5000)
+			def newLockStatus = updateLockStatus(id)
+			if (newLockStatus != "unknown" && newLockStatus != currentValue)
+				break
+		}
+	}
+}
+
+def executeRefresh() {
+	updateDevices()
 }
 
 def getTokenInfo() {
 	logDebug "Getting token and cookie"
+	state.token = null
+	state.cookie = null
 	
 	extractTokenAndCookie(sendCommand("/login", "GET", "text/html", "text/html", null, null, true))
 }
 
 def extractTokenAndCookie(response) {
     try {
+		logDebug "Got token response of ${response.status}"
         state.cookie = response?.headers?.'Set-Cookie'?.split(';')?.getAt(0) ?: state.cookie ?: state.cookie   
+		logDebug "Got cookie ${state.cookie}"
         state.token = (response.data.text =~ /meta content="(.*?)" name="csrf-token"/)[0][1]
-        state.tokenRefresh = now()
+		logDebug "Got token ${state.token}"
     } catch (Exception e) {
 		logDebug "Token reading threw ${e}" 
     }
@@ -106,57 +178,59 @@ def login() {
             "authenticity_token": state.token,
             "commit"            : "LOGIN",
             "utf8"              : "✓"
+
     ]
 
-	def resp = sendCommand("/signin", "POST", "application/x-www-form-urlencoded", "text/html", body, null, true)
+	def resp = sendCommand("/signin", "POST", "application/x-www-form-urlencoded", "text/html", body, null, false)
       
 	def returnValue = false
-	if (resp.status == 302 || resp.status == 200) {
+	if (resp != null && (resp.status == 302 || resp.status == 200)) {
 		returnValue = true
-		extractTokenAndCookie(resp)
+		
 	}
 
     return returnValue
 }
 
-def getLockInfo()
-{
-	def resp = sendCommand("/user/locks", "GET", "text/html", "text/html", null, null, true)
-	if (resp.status == 302 || resp.status == 200)
-		extractTokenAndCookie(resp)
-	return resp.data.text
-}
 
 def getLockStatus(lockId) {
-	def query = ['arguments': lockId]
-	def resp = sendCommand("/user/remote_locks/command/lock.json", "GET", "application/json", "application/json", null, query, false)
-    
-	if (resp.status == 200)
-		return resp.data
-	else
+	try
+	{
+		def query = ['arguments': lockId]
+		def resp = sendCommand("/user/remote_locks/command/lock.json", "GET", "application/json", "application/json", null, query, false)
+		
+		if (resp != null && resp.status == 200)
+			return resp.data
+		else
+			return null
+	}
+	catch (e)
+	{
+	logDebug "${e}"
 		return null
+	}
 }
 
 def updateDevices()
 {   
-    getLockInfo()
-    
     for (def i = 0; i < lockCount; i++) {
-        updateLockStatus(this.getProperty("lockId${i}"))
+        if (updateLockStatus(this.getProperty("lockId${i}")) == null)
+			return
     }
 }
 
 def updateLockStatus(lockId)
 {
     def lockData = getLockStatus(lockId)
+	def device = getChildDevice("kevo:" + lockId)
 	if (lockData == null) 
 	{
 		device.sendEvent(name: "lock", value: "unknown")
 		log.error "Failed to get lock information for ${lockId}"
-		return
+		return bykk
 	}
 	logDebug "Got lock state ${lockData.bolt_state}"
-    def device = getChildDevice("kevo:" + lockId)
+    
     if (lockData.bolt_state == "Locked")
     {
         device.sendEvent(name: "lock", value: "locked")
@@ -226,33 +300,45 @@ def cleanupSettings()
 
 def getHeaders() {
     def headers = [
-            "Cookie"       : state.cookie,
+			"Cookie"	   : state.cookie,
             "User-Agent"   : "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.12; rv:52.0) Gecko/20100101 Firefox/52.0",
             "Connection"   : "keep-alive",
             "Cache-Control": "no-cache"
     ]
     if (state.token) {
-        headers["Referer"] = state.referer ?: "https://mykevo.com/login"
+        headers["Referer"] = state.referer ?: "https://www.mykevo.com/login"
         headers["X-CSRF-TOKEN"] = state.token
     }
+
     return headers
 }
 
-def sendCommand(path, method, requestType, contentType, body, query, textParer)
+def sendCommand(path, method, requestType, contentType, body, query, textParser)
 {
-    def result = sendCommandRaw(path, method, requestType, contentType, body, query, textParser)
-    if (result.status >= 400)
-    {
-        logDebug "Received an error, attempting to relogin"
-        if (!login())
+	def result = null
+	try
+	{
+		result = sendCommandRaw(path, method, requestType, contentType, body, query, textParser)
+		if (result == null || result.status >= 400)
 		{
+			logDebug "Received an error, attempting to relogin"
 			getTokenInfo()
 			login()
+			result = sendCommandRaw(path, method, requestType, contentType, body, query, textParser)
+			if (result != null && result.status >= 400)
+				log.error "Error Status: ${result.status} for request ${path} (${response.data})"
 		}
+	}
+	catch (e)
+	{
+		logDebug "Received an error, attempting to relogin"
+		getTokenInfo()
+		login()
 		result = sendCommandRaw(path, method, requestType, contentType, body, query, textParser)
-		if (result.status >= 400)
+		if (result != null && result.status >= 400)
 			log.error "Error Status: ${result.status} for request ${path} (${response.data})"
-    }
+	}
+
 	return result
 }
 
@@ -273,70 +359,47 @@ def sendCommandRaw(path, method, requestType, contentType, body, query, textPars
 		def stringBody = body?.collect { k, v -> "$k=$v" }?.join("&")?.toString() ?: ""
 		params.body = stringBody
 	}
-	logDebug "Request path:${path} method:${method} body:${params.body} query:${query}"
 	def result = null
-	if (method == "GET")
+	try
 	{
-		httpGet(params) { resp -> 
-			result = resp
+		if (method == "GET")
+		{
+			httpGet(params) { resp -> 
+				state.cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0) ?: state.cookie ?: state.cookie   
+				result = resp
+			}
 		}
+		else if (method == "POST")
+		{
+			httpPost(params) { resp ->
+				state.cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0) ?: state.cookie ?: state.cookie   
+				result = resp
+			}
+		}
+		state.referer = "${params['uri']}${params['path']}"
 	}
-	else if (method == "POST")
+	catch (e)
 	{
-		httpPost(params) { resp ->
-			result = resp
-			
-		}
+		logDebug "Exception ${e}"
+	
 	}
-	logDebug "Response ${result.status}"
-	state.referer = "${params['uri']}${params['path']}"
+
 	return result
 }
 
-def handleLock(device, id) {
-	unschedule(updateDevices)
-	def currentValue = device.currentValue("lock")
-	logDebug "current lock state is ${currentValue}"
-    sendCommand("/user/remote_locks/command/remote_lock.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
-	pauseExecution(2000)
-	if (currentValue != "locked")
-	{
-		for (def i = 0; i < 3; i++)
-		{
-		logDebug "Checking lock status..."
-			pauseExecution(5000)
-			def newLockStatus = updateLockStatus(id)
-			if (newLockStatus != "unknown" && newLockStatus != currentValue)
-				break
-		}
-	}
-	schedule("0/30 * * * * ? *", updateDevices)
+def handleLock(lockDevice, id) {
+	logDebug "Queued lock for ${id} ${commandQueue.size()}"
+	commandQueue << [command: "lock", id: id]
 }
 
-def handleUnlock(device, id)  {
-	unschedule(updateDevices)
-	def currentValue = device.currentValue("lock")
-	logDebug "current lock state is ${currentValue}"
-    sendCommand("/user/remote_locks/command/remote_unlock.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
-	pauseExecution(2000)
-	if (currentValue != "unlocked")
-	{
-		for (def i = 0; i < 3; i++)
-		{
-			logDebug "Checking lock status..."
-			pauseExecution(5000)
-			def newLockStatus = updateLockStatus(id)
-			if (newLockStatus != "unknown" && newLockStatus != currentValue)
-				break
-		}
-	}
-    schedule("0/30 * * * * ? *", updateDevices)
+def handleUnlock(lockDevice, id) {
+	logDebug "Queued unlock for ${id} ${commandQueue.size()}"
+	commandQueue << [command: "unlock", id: id]
 }
 
-def handleRefresh(device, id) {
-	unschedule(updateDevices)
-	updateLockStatus(id)
-	schedule("0/30 * * * * ? *", updateDevices)
+def handleRefresh(lockDevice, id) {
+	commandQueue << [command: "refresh", id: id]
+	logDebug "Queued refresh for ${id} ${commandQueue.size()}"
 }
 
 def logDebug(msg) {
