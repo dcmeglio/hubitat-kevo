@@ -16,7 +16,8 @@ definition(
 
 import groovy.transform.Field
 @Field static java.util.concurrent.ConcurrentLinkedQueue commandQueue = new java.util.concurrent.ConcurrentLinkedQueue()
-@Field static def fakeSemaphore = false
+
+@Field static java.util.concurrent.Semaphore mutex = new java.util.concurrent.Semaphore(1)
 
 preferences {
 	page(name: "prefAccountAccess", title: "Kevo")
@@ -84,14 +85,9 @@ def runAllActions()
 {
 	try
 	{
-		if (fakeSemaphore)
-		{
-			if (now() - state.lastLockQuery >= 300000)
-				fakeSemaphore = false
+		if (!mutex.tryAcquire())
 			return
-		}
 			
-		fakeSemaphore = true
 		def action = null
 		while ((action = commandQueue.poll()) != null)
 		{
@@ -109,11 +105,11 @@ def runAllActions()
 			state.lastLockQuery = now()
 			updateDevices()
 		}
-		fakeSemaphore = false
+		mutex.release()
 	}
 	catch (e)
 	{
-		fakeSemaphore = false
+		mutex.release()
 		log.error e
 	}
 }
