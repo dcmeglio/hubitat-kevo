@@ -82,9 +82,9 @@ def runAllActions()
 {
 	try
 	{
-		while (commandQueue.peek())
+		def action = null
+		while ((action = commandQueue.poll()) != null)
 		{
-			def action = commandQueue.poll()
 			logDebug "Executing ${action.command} on ${action.id} ${commandQueue.size()}"
 			if (action.command == "lock")
 				executeLock(action.id)
