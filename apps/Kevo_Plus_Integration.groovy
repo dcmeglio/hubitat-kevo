@@ -111,41 +111,40 @@ def runAllActions()
 }
 
 def executeLock(id) {
-	def device = getChildDevice("kevo:" + id)
-	def currentValue = device.currentValue("lock")
-	logDebug "current lock state is ${currentValue}"
-    sendCommand("/user/remote_locks/command/remote_lock.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
-	pauseExecution(2000)
-	if (currentValue != "locked")
+	for (def i = 0; i < 3; i++)
 	{
-		for (def i = 0; i < 3; i++)
-		{
-			logDebug "Checking lock status..."
-			pauseExecution(5000)
-			def newLockStatus = updateLockStatus(id)
-			if (newLockStatus != "unknown" && newLockStatus != currentValue)
-				break
-		}
+		if (executeLockOrUnlock(id, "lock"))
+			return true
 	}
+	return false
 }
 
 def executeUnlock(id) {
-	def device = getChildDevice("kevo:" + id)
-	def currentValue = device.currentValue("lock")
-	logDebug "current lock state is ${currentValue}"
-    sendCommand("/user/remote_locks/command/remote_unlock.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
-	pauseExecution(2000)
-	if (currentValue != "unlocked")
+	for (def i = 0; i < 3; i++)
 	{
-		for (def i = 0; i < 3; i++)
-		{
-		logDebug "Checking lock status..."
-			pauseExecution(5000)
-			def newLockStatus = updateLockStatus(id)
-			if (newLockStatus != "unknown" && newLockStatus != currentValue)
-				break
-		}
+		if (executeLockOrUnlock(id, "unlock"))
+			return true
 	}
+	return false
+}
+
+def executeLockOrUnlock(id, action)
+{
+	def lockState = "locked"
+	if (action == "unlock")
+		lockState = "unlocked"
+	sendCommand("/user/remote_locks/command/remote_${action}.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
+	pauseExecution(2000)
+	
+	for (def i = 0; i < 3; i++)
+	{
+		logDebug "Checking lock status..."
+		pauseExecution(5000)
+		def newLockStatus = updateLockStatus(id)
+		if (newLockStatus != "unknown" && newLockStatus == lockState)
+			return true
+	}
+	return false
 }
 
 def executeRefresh() {
