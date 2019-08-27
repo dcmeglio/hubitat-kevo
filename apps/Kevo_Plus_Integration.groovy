@@ -78,7 +78,6 @@ def initialize() {
 	createChildDevices()
 	cleanupSettings()
 	schedule("0/1 * * * * ?", runAllActions)
-	//runIn(1, runAllActions, [overwrite: true])
 }
 
 def runAllActions()
