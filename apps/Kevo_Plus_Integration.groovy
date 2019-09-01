@@ -15,7 +15,9 @@ definition(
     iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png")
 
 import groovy.transform.Field
-@Field static List commandQueue = []
+@Field static java.util.concurrent.ConcurrentLinkedQueue commandQueue = new java.util.concurrent.ConcurrentLinkedQueue()
+
+@Field static java.util.concurrent.Semaphore mutex = new java.util.concurrent.Semaphore(1)
 
 preferences {
 	page(name: "prefAccountAccess", title: "Kevo")
@@ -71,22 +73,23 @@ def uninstalled() {
 def initialize() {
 	logDebug "initializing"
 	
-	commandQueue = []
 	state.lastLockQuery = 0
 	cleanupChildDevices()
 	createChildDevices()
 	cleanupSettings()
-	runIn(1, runAllActions, [overwrite: true])
+	schedule("0/1 * * * * ?", runAllActions)
 }
 
 def runAllActions()
 {
 	try
 	{
-		while (commandQueue.size() > 0)
+		if (!mutex.tryAcquire())
+			return
+			
+		def action = null
+		while ((action = commandQueue.poll()) != null)
 		{
-			def action = commandQueue[0]
-			commandQueue.removeAt(0)
 			logDebug "Executing ${action.command} on ${action.id} ${commandQueue.size()}"
 			if (action.command == "lock")
 				executeLock(action.id)
@@ -101,50 +104,50 @@ def runAllActions()
 			state.lastLockQuery = now()
 			updateDevices()
 		}
+		mutex.release()
 	}
 	catch (e)
 	{
+		mutex.release()
 		log.error e
 	}
-	runIn(1, runAllActions, [overwrite: true])
 }
 
 def executeLock(id) {
-	def device = getChildDevice("kevo:" + id)
-	def currentValue = device.currentValue("lock")
-	logDebug "current lock state is ${currentValue}"
-    sendCommand("/user/remote_locks/command/remote_lock.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
-	pauseExecution(2000)
-	if (currentValue != "locked")
+	for (def i = 0; i < 3; i++)
 	{
-		for (def i = 0; i < 3; i++)
-		{
-			logDebug "Checking lock status..."
-			pauseExecution(5000)
-			def newLockStatus = updateLockStatus(id)
-			if (newLockStatus != "unknown" && newLockStatus != currentValue)
-				break
-		}
+		if (executeLockOrUnlock(id, "lock"))
+			return true
 	}
+	return false
 }
 
 def executeUnlock(id) {
-	def device = getChildDevice("kevo:" + id)
-	def currentValue = device.currentValue("lock")
-	logDebug "current lock state is ${currentValue}"
-    sendCommand("/user/remote_locks/command/remote_unlock.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
-	pauseExecution(2000)
-	if (currentValue != "unlocked")
+	for (def i = 0; i < 3; i++)
 	{
-		for (def i = 0; i < 3; i++)
-		{
-		logDebug "Checking lock status..."
-			pauseExecution(5000)
-			def newLockStatus = updateLockStatus(id)
-			if (newLockStatus != "unknown" && newLockStatus != currentValue)
-				break
-		}
+		if (executeLockOrUnlock(id, "unlock"))
+			return true
 	}
+	return false
+}
+
+def executeLockOrUnlock(id, action)
+{
+	def lockState = "locked"
+	if (action == "unlock")
+		lockState = "unlocked"
+	sendCommand("/user/remote_locks/command/remote_${action}.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
+	pauseExecution(2000)
+	
+	for (def i = 0; i < 3; i++)
+	{
+		logDebug "Checking lock status..."
+		pauseExecution(5000)
+		def newLockStatus = updateLockStatus(id)
+		if (newLockStatus != "unknown" && newLockStatus == lockState)
+			return true
+	}
+	return false
 }
 
 def executeRefresh() {
@@ -389,16 +392,16 @@ def sendCommandRaw(path, method, requestType, contentType, body, query, textPars
 
 def handleLock(lockDevice, id) {
 	logDebug "Queued lock for ${id} ${commandQueue.size()}"
-	commandQueue << [command: "lock", id: id]
+	commandQueue.offer([command: "lock", id: id])
 }
 
 def handleUnlock(lockDevice, id) {
 	logDebug "Queued unlock for ${id} ${commandQueue.size()}"
-	commandQueue << [command: "unlock", id: id]
+	commandQueue.offer([command: "unlock", id: id])
 }
 
 def handleRefresh(lockDevice, id) {
-	commandQueue << [command: "refresh", id: id]
+	commandQueue.offer([command: "refresh", id: id])
 	logDebug "Queued refresh for ${id} ${commandQueue.size()}"
 }
 
