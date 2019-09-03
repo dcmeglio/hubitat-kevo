@@ -38,13 +38,10 @@ def prefAccountAccess() {
 def prefDevices() {
 	if (login())
 	{
+        getLocksList()
 		return dynamicPage(name: "prefDevices", title: "Lock Information", install: true, uninstall: true) {
 			section("Lock Information") {
-				input(name: "lockCount", type: "number", title: "How many locks do you have?", required: true, submitOnChange: true)
-				for (def i = 0; i < lockCount; i++) {
-					input(name: "lockName${i}", type: "text", title: "Lock ${i+1} Name", required: true)
-					input(name: "lockId${i}", type: "text", title: "Lock ${i+1} ID", required: true)
-				}
+				input(name: "locks", type: "enum", title: "Locks", required:false, multiple:true, options:state.lockList, hideWhenEmpty: true)
 			}
 		}
 	}
@@ -76,7 +73,6 @@ def initialize() {
 	state.lastLockQuery = 0
 	cleanupChildDevices()
 	createChildDevices()
-	cleanupSettings()
 	schedule("0/1 * * * * ?", runAllActions)
 }
 
@@ -110,6 +106,19 @@ def runAllActions()
 	{
 		mutex.release()
 		log.error e
+	}
+}
+
+def getLocksList()
+{
+	state.lockList = [:]
+    def result = sendCommand("/user/locks", "GET", "application/json", "text/html", null, null, true)
+    def html = result.data.text
+	def matches = (html =~ /data-lock-id="(.*?)" data-name="(.*?)" data-type="lock">/)
+	log.debug "matches: ${matches.size()}"
+	for (def i = 0; i < matches.size(); i++)
+	{
+		state.lockList[matches[i][1]] = matches[i][2]
 	}
 }
 
@@ -195,7 +204,6 @@ def login() {
     return returnValue
 }
 
-
 def getLockStatus(lockId) {
 	try
 	{
@@ -230,7 +238,7 @@ def updateLockStatus(lockId)
 	{
 		device.sendEvent(name: "lock", value: "unknown")
 		log.error "Failed to get lock information for ${lockId}"
-		return bykk
+		return null
 	}
 	logDebug "Got lock state ${lockData.bolt_state}"
     
@@ -252,10 +260,11 @@ def updateLockStatus(lockId)
 }
 
 def createChildDevices() {
-    for (def i = 0; i < lockCount; i++) {
-        if (!getChildDevice("kevo:" + this.getProperty("lockId${i}")))
-            addChildDevice("dcm.kevo", "Kevo Lock", "kevo:" + this.getProperty("lockId${i}"), 1234, ["name": this.getProperty("lockName${i}"), isComponent: false])
-    }
+	for (lock in locks)
+	{
+		if (!getChildDevice("kevo:" + lock))
+            addChildDevice("dcm.kevo", "Kevo Lock", "kevo:" + lock, 1234, ["name": state.lockList[lock], isComponent: false])
+	}
 }
 
 def cleanupChildDevices()
@@ -265,39 +274,19 @@ def cleanupChildDevices()
 		def deviceId = device.deviceNetworkId.replace("kevo:","")
 		
 		def deviceFound = false
-		for (def i = 0; i < lockCount; i++)
+		for (lock in locks)
 		{
-			def lockId = this.getProperty("lockId${i}")
-			if (deviceId == lockId)
+			if (lock == deviceId)
 			{
 				deviceFound = true
 				break
 			}
 		}
-		
+				
 		if (deviceFound == true)
 			continue
 			
 		deleteChildDevice(device.deviceNetworkId)
-	}
-}
-
-def cleanupSettings()
-{
-	def allProperties = this.settings
-	def counter = null
-	for (property in allProperties) {
-		if (property.key.startsWith("lockId")) {
-			counter = property.key.replace("lockId","")
-			
-			if (counter.toInteger() > lockCount)
-				app.removeSetting(property.key)
-		}
-		else if (property.key.startsWith("lockName")) {
-			counter = property.key.replace("lockName","")
-			if (counter.toInteger() > lockCount)
-				app.removeSetting(property.key)
-		}
 	}
 }
 
