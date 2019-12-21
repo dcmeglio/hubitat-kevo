@@ -81,8 +81,17 @@ def runAllActions()
 	try
 	{
 		if (!mutex.tryAcquire())
+		{
+			// Bust the lock if it is too old, indicates an issue with Hubitat eventing
+			if ((now() - state.lockTime ?: 0) > 120000) {
+				
+				log.warn "Lock was held for 2 minutes, releasing ${now()} ${state.lockTime} ${now() - state.lockTime}"
+				mutex.release()
+			}
+		
 			return
-			
+		}
+		state.lockTime = now()
 		def action = null
 		while ((action = commandQueue.poll()) != null)
 		{
