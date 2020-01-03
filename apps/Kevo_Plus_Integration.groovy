@@ -233,8 +233,8 @@ def getLockStatus(lockId) {
 
 def updateDevices()
 {   
-    for (def i = 0; i < lockCount; i++) {
-        if (updateLockStatus(this.getProperty("lockId${i}")) == null)
+    for (lock in locks) {
+        if (updateLockStatus(lock) == null)
 			return
     }
 }
