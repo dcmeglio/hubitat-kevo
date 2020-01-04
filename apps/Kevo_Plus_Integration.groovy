@@ -31,6 +31,7 @@ def prefAccountAccess() {
 			input("kevoUsername", "text", title: "Kevo Username", description: "Enter your Kevo username", required: true)
 			input("kevoPassword", "password", title: "Kevo Password", description: "Enter your Kevo password", required: true)
 			input("debugOutput", "bool", title: "Enable debug logging?", defaultValue: true, displayDuringSetup: false, required: false)
+			input("pollFreq", "number", title: "How frequently should the Kevo service be polled (in seconds)?", defaultValue: 30, displayDuringSetup: true, required: true)
 		}
 	}
 }
@@ -103,7 +104,7 @@ def runAllActions()
 			else if (action.command == "refresh")
 				executeRefresh()
 		}
-		if (now() - state.lastLockQuery >= 30000)
+		if (now() - state.lastLockQuery >= (pollFreq ?: 30) * 1000)
 		{
 			logDebug "Updating devices"
 			state.lastLockQuery = now()
