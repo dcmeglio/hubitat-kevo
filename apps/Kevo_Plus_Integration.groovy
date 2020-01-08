@@ -70,7 +70,7 @@ def uninstalled() {
 
 def initialize() {
 	logDebug "initializing"
-	
+	state.failures = 0
 	state.lastLockQuery = 0
 	cleanupChildDevices()
 	createChildDevices()
@@ -104,11 +104,22 @@ def runAllActions()
 			else if (action.command == "refresh")
 				executeRefresh()
 		}
-		if (now() - state.lastLockQuery >= (pollFreq ?: 30) * 1000)
+		if (now() - state.lastLockQuery >= (pollFreq ?: 30) * (state.failures+1) * 1000)
 		{
 			logDebug "Updating devices"
 			state.lastLockQuery = now()
-			updateDevices()
+			if (!updateDevices())
+			{
+				if (state.failures == null)
+					state.failures = 0
+				state.failures++
+				if (state.failures > 4)
+					state.failures = 4
+				log.warn "Failed ${state.failures} times, delaying retry for ${(pollFreq ?: 30) * (state.failures+1) * 1000} seconds"
+			}
+			else
+				state.failures = 0
+				
 		}
 		mutex.release()
 	}
@@ -236,8 +247,9 @@ def updateDevices()
 {   
     for (lock in locks) {
         if (updateLockStatus(lock) == null)
-			return
+			return false
     }
+	return true
 }
 
 def updateLockStatus(lockId)
