@@ -1,0 +1,25 @@
+{
+	"packageName": "Kevo Plus Integration",
+	"minimumHEVersion": "2.1.9",
+	"author": "Dominick Meglio",
+	"version": "1.0.0",
+	"dateReleased": "2020-04-09",
+	"apps" : [
+		{
+			"id" : "ab3d4641-f6e0-4573-95b7-7124819af2b2",
+			"name": "Kevo Plus Integration",
+			"namespace": "dcm.kevo",
+			"location": "https://raw.githubusercontent.com/dcmeglio/hubitat-kevo/master/apps/Kevo_Plus_Integration.groovy",
+			"required": true
+		}
+	],
+	"drivers": [
+		{
+			"id" : "abfa2f8e-cdbd-43e0-a9b4-6a4ffd63a15f",
+			"name": "Kevo Lock",
+			"namespace": "dcm.kevo",
+			"location": "https://raw.githubusercontent.com/dcmeglio/hubitat-kevo/master/drivers/Kevo_Lock.groovy",
+			"required": true
+		}
+	]
+}
