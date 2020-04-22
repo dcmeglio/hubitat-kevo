@@ -2,8 +2,9 @@
 	"packageName": "Kevo Plus Integration",
 	"minimumHEVersion": "2.1.9",
 	"author": "Dominick Meglio",
-	"version": "1.0.0",
-	"dateReleased": "2020-04-09",
+	"version": "1.0.1",
+	"dateReleased": "2020-04-22",
+	"documentationLink": "https://github.com/dcmeglio/hubitat-kevo/blob/master/README.md",
 	"apps" : [
 		{
 			"id" : "ab3d4641-f6e0-4573-95b7-7124819af2b2",
