@@ -11,7 +11,8 @@
 			"name": "Kevo Plus Integration",
 			"namespace": "dcm.kevo",
 			"location": "https://raw.githubusercontent.com/dcmeglio/hubitat-kevo/master/apps/Kevo_Plus_Integration.groovy",
-			"required": true
+			"required": true,
+			"primary": true
 		}
 	],
 	"drivers": [
