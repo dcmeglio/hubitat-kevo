@@ -13,7 +13,7 @@ definition(
     iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
     iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
     iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
-	documentationLink: "https://github.com/dcmeglio/hubitat-kevo/blob/master/README.md")
+    documentationLink: "https://github.com/dcmeglio/hubitat-kevo/blob/master/README.md")
 
 import groovy.transform.Field
 @Field static java.util.concurrent.ConcurrentLinkedQueue commandQueue = new java.util.concurrent.ConcurrentLinkedQueue()
@@ -21,191 +21,205 @@ import groovy.transform.Field
 @Field static java.util.concurrent.Semaphore mutex = new java.util.concurrent.Semaphore(1)
 
 preferences {
-	page(name: "prefAccountAccess", title: "Kevo")
-	page(name: "prefDevices", title: "Kevo")
+    page(name: "prefAccountAccess", title: "Kevo")
+    page(name: "prefDevices", title: "Kevo")
 }
 
 def prefAccountAccess() {
-	getTokenInfo()
-	return dynamicPage(name: "prefApiAccess", title: "Connect to Kevo Plus", nextPage: "prefDevices", uninstall:false, install: false) {
-		section("Kevo Login Information"){
-			input("kevoUsername", "text", title: "Kevo Username", description: "Enter your Kevo username", required: true)
-			input("kevoPassword", "password", title: "Kevo Password", description: "Enter your Kevo password", required: true)
-			input("debugOutput", "bool", title: "Enable debug logging?", defaultValue: true, displayDuringSetup: false, required: false)
-			input("pollFreq", "number", title: "How frequently should the Kevo service be polled (in seconds)?", defaultValue: 30, displayDuringSetup: true, required: true)
-		}
-	}
+    getTokenInfo()
+    return dynamicPage(name: "prefAccountAccess", title: "Connect to Kevo Plus", nextPage: "prefDevices", uninstall:false, install: false) {
+        section("Kevo Login Information"){
+            input("kevoUsername", "text", title: "Kevo Username", description: "Enter your Kevo username", required: true)
+            input("kevoPassword", "password", title: "Kevo Password", description: "Enter your Kevo password", required: true)
+            input("debugOutput", "bool", title: "Enable debug logging?", defaultValue: true, displayDuringSetup: false, required: false)
+            input("pollFreq", "number", title: "How frequently should the Kevo service be polled (in seconds)?", defaultValue: 30, displayDuringSetup: true, required: true)
+        }
+    }
 }
 
 def prefDevices() {
-	if (login())
-	{
+    if (login())
+    {
         getLocksList()
-		return dynamicPage(name: "prefDevices", title: "Lock Information", install: true, uninstall: true) {
-			section("Lock Information") {
-				input(name: "locks", type: "enum", title: "Locks", required:false, multiple:true, options:state.lockList, hideWhenEmpty: true)
-			}
-		}
-	}
+        return dynamicPage(name: "prefDevices", title: "Lock Information", install: true, uninstall: true) {
+            section("Lock Information") {
+                input(name: "locks", type: "enum", title: "Locks", required:false, multiple:true, options:state.lockList, hideWhenEmpty: true)
+            }
+        }
+    }
+    else
+    {
+        state.remove('token')
+        state.remove('cookie')
+        return dynamicPage(name: "prefDevices", title: "Login Failed", install: false, uninstall: true, nextPage: 'prefAccountAccess') {
+            section("Login Failure") {
+                paragraph 'Login to Kevo web service failed.'
+            }
+        }
+    }
 }
 
 def installed() {
-	logDebug "Installed with settings: ${settings}"
-	initialize()
+    logDebug "Installed with settings: ${settings}"
+    initialize()
 }
 
 def updated() {
-	logDebug "Updated with settings: ${settings}"
-	unschedule()
-	unsubscribe()
-	initialize()
+    logDebug "Updated with settings: ${settings}"
+    unschedule()
+    unsubscribe()
+    initialize()
 }
 
 def uninstalled() {
-	logDebug "uninstalling app"
-	for (device in getChildDevices())
-	{
-		deleteChildDevice(device.deviceNetworkId)
-	}
+    logDebug "uninstalling app"
+    for (device in getChildDevices())
+    {
+        deleteChildDevice(device.deviceNetworkId)
+    }
 }
 
 def initialize() {
-	logDebug "initializing"
-	state.failures = 0
-	state.lastLockQuery = 0
-	cleanupChildDevices()
-	createChildDevices()
-	schedule("0/1 * * * * ?", runAllActions)
+    logDebug "initializing"
+    state.failures = 0
+    state.lastLockQuery = 0
+    cleanupChildDevices()
+    createChildDevices()
+    schedule("0/1 * * * * ?", runAllActions)
 }
 
 def runAllActions()
 {
-	try
-	{
-		if (!mutex.tryAcquire())
-		{
-			// Bust the lock if it is too old, indicates an issue with Hubitat eventing
-			if ((now() - state.lockTime ?: 0) > 120000) {
-				
-				log.warn "Lock was held for 2 minutes, releasing ${now()} ${state.lockTime} ${now() - state.lockTime}"
-				mutex.release()
-			}
-		
-			return
-		}
-		state.lockTime = now()
-		def action = null
-		while ((action = commandQueue.poll()) != null)
-		{
-			logDebug "Executing ${action.command} on ${action.id} ${commandQueue.size()}"
-			if (action.command == "lock")
-				executeLock(action.id)
-			else if (action.command == "unlock")
-				executeUnlock(action.id)
-			else if (action.command == "refresh")
-				executeRefresh()
-		}
-		if (now() - state.lastLockQuery >= (pollFreq ?: 30) * (state.failures+1) * 1000)
-		{
-			logDebug "Updating devices"
-			state.lastLockQuery = now()
-			if (!updateDevices())
-			{
-				if (state.failures == null)
-					state.failures = 0
-				state.failures++
-				if (state.failures > 4)
-					state.failures = 4
-				log.warn "Failed ${state.failures} times, delaying retry for ${(pollFreq ?: 30) * (state.failures+1) * 1000} seconds"
-			}
-			else
-				state.failures = 0
-				
-		}
-		mutex.release()
-	}
-	catch (e)
-	{
-		mutex.release()
-		log.error e
-	}
+    try
+    {
+        if (!mutex.tryAcquire())
+        {
+            // Bust the lock if it is too old, indicates an issue with Hubitat eventing
+            if ((now() - state.lockTime ?: 0) > 120000) {
+                
+                log.warn "Lock was held for 2 minutes, releasing ${now()} ${state.lockTime} ${now() - state.lockTime}"
+                mutex.release()
+            }
+        
+            return
+        }
+        state.lockTime = now()
+        def action = null
+        while ((action = commandQueue.poll()) != null)
+        {
+            logDebug "Executing ${action.command} on ${action.id} ${commandQueue.size()}"
+            if (action.command == "lock")
+                executeLock(action.id)
+            else if (action.command == "unlock")
+                executeUnlock(action.id)
+            else if (action.command == "refresh")
+                executeRefresh()
+        }
+        if (now() - state.lastLockQuery >= (pollFreq ?: 30) * (state.failures+1) * 1000)
+        {
+            logDebug "Updating devices"
+            state.lastLockQuery = now()
+            if (!updateDevices())
+            {
+                if (state.failures == null)
+                    state.failures = 0
+                state.failures++
+                if (state.failures > 4)
+                    state.failures = 4
+                log.warn "Failed ${state.failures} times, delaying retry for ${(pollFreq ?: 30) * (state.failures+1)} seconds"
+            }
+            else
+                state.failures = 0
+                
+        }
+        mutex.release()
+    }
+    catch (e)
+    {
+        mutex.release()
+        log.error e
+    }
 }
 
 def getLocksList()
 {
-	state.lockList = [:]
+    state.lockList = [:]
     def result = sendCommand("/user/locks", "GET", "application/json", "text/html", null, null, true)
     def html = result.data.text
-	def matches = (html =~ /data-lock-id="(.*?)" data-name="(.*?)" data-type="lock">/)
-	log.debug "matches: ${matches.size()}"
-	for (def i = 0; i < matches.size(); i++)
-	{
-		state.lockList[matches[i][1]] = matches[i][2]
-	}
+    def matches = (html =~ /data-lock-id="(.*?)" data-name="(.*?)" data-type="lock">/)
+    log.debug "matches: ${matches.size()}"
+    for (def i = 0; i < matches.size(); i++)
+    {
+        state.lockList[matches[i][1]] = matches[i][2]
+    }
 }
 
 def executeLock(id) {
-	for (def i = 0; i < 3; i++)
-	{
-		if (executeLockOrUnlock(id, "lock"))
-			return true
-	}
-	return false
+    for (def i = 0; i < 3; i++)
+    {
+        if (executeLockOrUnlock(id, "lock"))
+            return true
+    }
+    return false
 }
 
 def executeUnlock(id) {
-	for (def i = 0; i < 3; i++)
-	{
-		if (executeLockOrUnlock(id, "unlock"))
-			return true
-	}
-	return false
+    for (def i = 0; i < 3; i++)
+    {
+        if (executeLockOrUnlock(id, "unlock"))
+            return true
+    }
+    return false
 }
 
 def executeLockOrUnlock(id, action)
 {
-	def lockState = "locked"
-	if (action == "unlock")
-		lockState = "unlocked"
-	sendCommand("/user/remote_locks/command/remote_${action}.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
-	pauseExecution(2000)
-	
-	for (def i = 0; i < 3; i++)
-	{
-		logDebug "Checking lock status..."
-		pauseExecution(5000)
-		def newLockStatus = updateLockStatus(id)
-		if (newLockStatus != "unknown" && newLockStatus == lockState)
-			return true
-	}
-	return false
+    def lockState = "locked"
+    if (action == "unlock")
+        lockState = "unlocked"
+    sendCommand("/user/remote_locks/command/remote_${action}.json", "GET", "application/json", "application/json", null, ['arguments': id], false)
+    pauseExecution(2000)
+    
+    for (def i = 0; i < 3; i++)
+    {
+        logDebug "Checking lock status..."
+        pauseExecution(5000)
+        def newLockStatus = updateLockStatus(id)
+        if (newLockStatus != "unknown" && newLockStatus == lockState)
+            return true
+    }
+    return false
 }
 
 def executeRefresh() {
-	updateDevices()
+    updateDevices()
 }
 
 def getTokenInfo() {
-	logDebug "Getting token and cookie"
-	state.token = null
-	state.cookie = null
-	
-	extractTokenAndCookie(sendCommand("/login", "GET", "text/html", "text/html", null, null, true))
+    logDebug "Getting token and cookie"
+    state.token = null
+    state.cookie = null
+    
+    extractTokenAndCookie(sendCommand("/login", "GET", "text/html", "text/html", null, null, true))
 }
 
 def extractTokenAndCookie(response) {
     try {
-		logDebug "Got token response of ${response.status}"
+        logDebug "Got token response of ${response.status}"
         state.cookie = response?.headers?.'Set-Cookie'?.split(';')?.getAt(0) ?: state.cookie ?: state.cookie   
-		logDebug "Got cookie ${state.cookie}"
+        logDebug "Got cookie ${state.cookie}"
         state.token = (response.data.text =~ /meta content="(.*?)" name="csrf-token"/)[0][1]
-		logDebug "Got token ${state.token}"
+        logDebug "Got token ${state.token}"
     } catch (Exception e) {
-		logDebug "Token reading threw ${e}" 
+        logDebug "Token reading threw ${e}" 
     }
 }
 
 def login() {
+    if (!state.token || !kevoUsername || !kevoPassword) {
+        return false
+    }
+
     def body = [
             "user[username]"    : kevoUsername,
             "user[password]"    : kevoPassword,
@@ -215,107 +229,106 @@ def login() {
 
     ]
 
-	def resp = sendCommand("/signin", "POST", "application/x-www-form-urlencoded", "text/html", body, null, false)
+    def resp = sendCommand("/signin", "POST", "application/x-www-form-urlencoded", "text/html", body, null, false)
       
-	def returnValue = false
-	if (resp != null && (resp.status == 302 || resp.status == 200)) {
-		returnValue = true
-		
-	}
+    def returnValue = false
+    if (resp != null && (resp.status == 302 || resp.status == 200)) {
+        returnValue = true
+    }
 
     return returnValue
 }
 
 def getLockStatus(lockId) {
-	try
-	{
-		def query = ['arguments': lockId]
-		def resp = sendCommand("/user/remote_locks/command/lock.json", "GET", "application/json", "application/json", null, query, false)
-		
-		if (resp != null && resp.status == 200)
-			return resp.data
-		else
-			return null
-	}
-	catch (e)
-	{
-	logDebug "${e}"
-		return null
-	}
+    try
+    {
+        def query = ['arguments': lockId]
+        def resp = sendCommand("/user/remote_locks/command/lock.json", "GET", "application/json", "application/json", null, query, false)
+        
+        if (resp != null && resp.status == 200)
+            return resp.data
+        else
+            return null
+    }
+    catch (e)
+    {
+    logDebug "${e}"
+        return null
+    }
 }
 
 def updateDevices()
 {   
     for (lock in locks) {
         if (updateLockStatus(lock) == null)
-			return false
+            return false
     }
-	return true
+    return true
 }
 
 def updateLockStatus(lockId)
 {
     def lockData = getLockStatus(lockId)
-	def device = getChildDevice("kevo:" + lockId)
-	if (lockData == null) 
-	{
-		device.sendEvent(name: "lock", value: "unknown")
-		log.error "Failed to get lock information for ${lockId}"
-		return null
-	}
-	logDebug "Got lock state ${lockData.bolt_state}"
+    def device = getChildDevice("kevo:" + lockId)
+    if (lockData == null) 
+    {
+        device.sendEvent(name: "lock", value: "unknown")
+        log.error "Failed to get lock information for ${lockId}"
+        return null
+    }
+    logDebug "Got lock state ${lockData.bolt_state}"
     
     if (lockData.bolt_state == "Locked")
     {
         device.sendEvent(name: "lock", value: "locked")
-		return "locked"
+        return "locked"
     }
     else if (lockData.bolt_state == "Unlocked")
     {
         device.sendEvent(name: "lock", value: "unlocked")
-		return "unlocked"
+        return "unlocked"
     }
     else
     {
         device.sendEvent(name: "lock", value: "unknown")
-		return "unknown"
+        return "unknown"
     }
 }
 
 def createChildDevices() {
-	for (lock in locks)
-	{
-		if (!getChildDevice("kevo:" + lock))
+    for (lock in locks)
+    {
+        if (!getChildDevice("kevo:" + lock))
             addChildDevice("dcm.kevo", "Kevo Lock", "kevo:" + lock, 1234, ["name": state.lockList[lock], isComponent: false])
-	}
+    }
 }
 
 def cleanupChildDevices()
 {
-	for (device in getChildDevices())
-	{
-		def deviceId = device.deviceNetworkId.replace("kevo:","")
-		
-		def deviceFound = false
-		for (lock in locks)
-		{
-			if (lock == deviceId)
-			{
-				deviceFound = true
-				break
-			}
-		}
-				
-		if (deviceFound == true)
-			continue
-			
-		deleteChildDevice(device.deviceNetworkId)
-	}
+    for (device in getChildDevices())
+    {
+        def deviceId = device.deviceNetworkId.replace("kevo:","")
+        
+        def deviceFound = false
+        for (lock in locks)
+        {
+            if (lock == deviceId)
+            {
+                deviceFound = true
+                break
+            }
+        }
+                
+        if (deviceFound == true)
+            continue
+            
+        deleteChildDevice(device.deviceNetworkId)
+    }
 }
 
 def getHeaders() {
     def headers = [
-			"Cookie"	   : state.cookie,
+            "Cookie"       : state.cookie,
             "User-Agent"   : "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.12; rv:52.0) Gecko/20100101 Firefox/52.0",
             "Connection"   : "keep-alive",
             "Cache-Control": "no-cache"
@@ -328,97 +341,113 @@ def getHeaders() {
     return headers
 }
 
-def sendCommand(path, method, requestType, contentType, body, query, textParser)
-{
-	def result = null
-	try
-	{
-		result = sendCommandRaw(path, method, requestType, contentType, body, query, textParser)
-		if (result == null || result.status >= 400)
-		{
-			logDebug "Received an error, attempting to relogin"
-			getTokenInfo()
-			login()
-			result = sendCommandRaw(path, method, requestType, contentType, body, query, textParser)
-			if (result != null && result.status >= 400)
-				log.error "Error Status: ${result.status} for request ${path} (${response.data})"
-		}
-	}
-	catch (e)
-	{
-		logDebug "Received an error, attempting to relogin"
-		getTokenInfo()
-		login()
-		result = sendCommandRaw(path, method, requestType, contentType, body, query, textParser)
-		if (result != null && result.status >= 400)
-			log.error "Error Status: ${result.status} for request ${path} (${response.data})"
-	}
-
-	return result
+def sendCommand(path, method, requestType, contentType, body, query, textParser) {
+    def result = null
+    try 
+    {
+        result = sendCommandRaw(path, method, requestType, contentType, body, query, textParser)
+        if (result == null || result.status >= 400) 
+        {
+            logDebug 'Received an error, attempting to relogin'
+            if (path != '/login' && method != 'GET') 
+            {
+                getTokenInfo()
+                if (login())
+                {
+                    result = sendCommandRaw(path, method, requestType, contentType, body, query, textParser)
+                    if (result != null && result.status >= 400)
+                        log.error "Error Status: ${result.status} for request ${path} (${response.data})"
+                }
+            }
+            else
+            {
+                log.error "Failed to login, giving up"
+            }
+        }
+    }
+    catch (e)
+    {
+        logDebug 'Received an error, attempting to relogin'
+        if (path != '/login' && method != 'GET')
+        {
+            getTokenInfo()
+            if (login())
+            {
+                result = sendCommandRaw(path, method, requestType, contentType, body, query, textParser)
+                if (result != null && result.status >= 400)
+                    log.error "Error Status: ${result.status} for request ${path} (${response.data})"
+            }
+        }
+        else
+        {
+            log.error "Failed to login, giving up"
+        }
+    }
+    return result
 }
 
 def sendCommandRaw(path, method, requestType, contentType, body, query, textParser) {
-	def params = [
-		uri: "https://www.mykevo.com",
-		path: path,
+    def params = [
+        uri: "https://www.mykevo.com",
+        path: path,
         requestContentType: requestType,
         contentType: contentType,
         headers: headers,
         textParser: textParser
-	]
-	if (query != null)
-		params.query = query
-		
-	if (body != null)
-	{
-		def stringBody = body?.collect { k, v -> "$k=$v" }?.join("&")?.toString() ?: ""
-		params.body = stringBody
-	}
-	def result = null
-	try
-	{
-		if (method == "GET")
-		{
-			httpGet(params) { resp -> 
-				state.cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0) ?: state.cookie ?: state.cookie   
-				result = resp
-			}
-		}
-		else if (method == "POST")
-		{
-			httpPost(params) { resp ->
-				state.cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0) ?: state.cookie ?: state.cookie   
-				result = resp
-			}
-		}
-		state.referer = "${params['uri']}${params['path']}"
-	}
-	catch (e)
-	{
-		logDebug "Exception ${e}"
-	
-	}
+    ]
+    if (query != null)
+        params.query = query
+        
+    if (body != null)
+    {
+        def stringBody = body?.collect { k, v -> "$k=$v" }?.join("&")?.toString() ?: ""
+        params.body = stringBody
+    }
+    def result = null
+    try
+    {
+        if (method == "GET")
+        {
+            httpGet(params) { resp -> 
+                state.cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0) ?: state.cookie ?: state.cookie   
+                result = resp
+            }
+        }
+        else if (method == "POST")
+        {
+            httpPost(params) { resp ->
+                state.cookie = resp?.headers?.'Set-Cookie'?.split(';')?.getAt(0) ?: state.cookie ?: state.cookie   
+                result = resp
+            }
+        }
+        state.referer = "${params['uri']}${params['path']}"
+    }
+    catch (e)
+    {
+        logDebug "Exception ${e}"
+    
+    }
 
-	return result
+    return result
 }
 
 def handleLock(lockDevice, id) {
-	logDebug "Queued lock for ${id} ${commandQueue.size()}"
-	commandQueue.offer([command: "lock", id: id])
+    logDebug "Queued lock for ${id} ${commandQueue.size()}"
+    commandQueue.offer([command: "lock", id: id])
 }
 
 def handleUnlock(lockDevice, id) {
-	logDebug "Queued unlock for ${id} ${commandQueue.size()}"
-	commandQueue.offer([command: "unlock", id: id])
+    logDebug "Queued unlock for ${id} ${commandQueue.size()}"
+    commandQueue.offer([command: "unlock", id: id])
 }
 
 def handleRefresh(lockDevice, id) {
-	commandQueue.offer([command: "refresh", id: id])
-	logDebug "Queued refresh for ${id} ${commandQueue.size()}"
+    commandQueue.offer([command: "refresh", id: id])
+    logDebug "Queued refresh for ${id} ${commandQueue.size()}"
 }
 
 def logDebug(msg) {
     if (settings?.debugOutput) {
-		log.debug msg
-	}
+        log.debug msg
+    }
 }
